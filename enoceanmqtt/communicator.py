@@ -32,6 +32,7 @@ class Communicator:
     def __init__(self, config, sensors):
         self.conf = config
         self.sensors = sensors
+        self.teach_in = False
 
         # check for mandatory configuration
         if 'mqtt_host' not in self.conf or 'enocean_port' not in self.conf:
@@ -448,10 +449,10 @@ class Communicator:
         destination = in_packet.sender
 
         self._send_packet(sensor, destination, None, True,
-                          in_packet.data if in_packet.learn else None)
+                          in_packet if in_packet.learn else None)
 
     def _send_packet(self, sensor, destination, command=None,
-                     negate_direction=False, learn_data=None):
+                     negate_direction=False, learn_packet=None):
         '''triggers sending of an enocean packet'''
         # determine direction indicator
         if 'direction' in sensor and sensor.get('direction'):
@@ -462,7 +463,7 @@ class Communicator:
         else:
             direction = None
         # is this a response to a learn packet?
-        is_learn_response = learn_data is not None
+        is_learn_response = learn_packet is not None
 
         # Add possibility for the user to indicate a specific sender address
         # in sensor configuration using added 'sender' field.
@@ -471,6 +472,12 @@ class Communicator:
             sender = [(sensor['sender'] >> i*8) & 0xff for i in reversed(range(4))]
         else:
             sender = self.enocean_sender
+
+        if is_learn_response and learn_packet.rorg == RORG.UTE:
+            logging.info("Generating UTE teach-in response for %s, sent from %s", sensor['name'], enocean.utils.to_hex_string(sender))
+            response_packet = learn_packet.create_response_packet(sender_id=sender)
+            self.enocean.send(response_packet)
+            return
 
         # Check whether the learn bit should be set in the packet (only valid for RORG.BS1 and RORG.BS4)
         force_learn = False
@@ -546,9 +553,9 @@ class Communicator:
                     logging.warning('sending only default data as answer to %s', sensor['name'])
 
         else:
-            # learn request received
+            # learn request received (non-UTE)
             # copy EEP and manufacturer ID
-            packet.data[1:5] = learn_data[1:5]
+            packet.data[1:5] = learn_packet.data[1:5]
             # update flags to acknowledge learn request
             packet.data[4] = 0xf0
 
@@ -563,8 +570,11 @@ class Communicator:
 #            if 'address' in cur_sensor and \
 #                    enocean.utils.combine_hex(packet.sender) == cur_sensor['address']:
             # Does this sensor match?
+            # For UTE teach-in, the packet RORG is UTE, but the sensor may be configured with a different RORG.
+            is_ute_teach_in = packet.rorg == RORG.UTE and self.teach_in
             if (enocean.utils.combine_hex(packet.sender) == cur_sensor.get('address')) and \
                ((packet.rorg == cur_sensor.get('rorg')) or \
+                (is_ute_teach_in) or \
                 (not cur_sensor.get('rorg') and cur_sensor.get('ignore'))):
                 found_sensor = cur_sensor
                 break
@@ -596,7 +606,7 @@ class Communicator:
         self._read_packet(packet, found_sensor)
 
         # check for neccessary reply
-        if str(found_sensor.get('answer')) in ("True", "true", "1"):
+        if (str(found_sensor.get('answer')) in ("True", "true", "1")) or is_ute_teach_in:
             self._reply_packet(packet, found_sensor)
 
 

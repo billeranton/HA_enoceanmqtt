@@ -107,8 +107,16 @@ class HACommunicator(Communicator):
         # Init
         super().__init__(config, sensors)
 
+        # support sender address teach in
+        self.sender_address_teach_in = config.get('sender_address_teach_in', False)
+        if self.sender_address_teach_in:
+            logging.info("Teach-in with custom sender address supported")
+        else:
+            logging.info("Teach-in with base address")
+
         # Disable Teach-in on startup
         self.enocean.teach_in = False
+        self.teach_in = False
         logging.info("Auto Teach-in is %s", "enabled" if self.enocean.teach_in else "disabled")
 
 
@@ -528,9 +536,14 @@ class HACommunicator(Communicator):
             if target_name == self.conf['mqtt_prefix'][:-1]:
                 # Handle learn request
                 if prop == "/learn/req":
-                    self.enocean.teach_in = msg.payload.decode('UTF-8') == 'ON'
+                    payload_on = msg.payload.decode('UTF-8') == 'ON'
+                    if self.sender_address_teach_in:
+                        self.teach_in = payload_on
+                        logging.info("Sender address teach-in is now %s", "enabled" if self.teach_in else "disabled")
+                    else:
+                        self.enocean.teach_in = payload_on
                     self.mqtt.publish(self._system_status_topic['learn'],
-                                      'ON' if self.enocean.teach_in else 'OFF',
+                                      'ON' if payload_on else 'OFF',
                                       retain=True)
 
     #=============================================================================================
